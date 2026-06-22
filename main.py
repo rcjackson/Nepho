@@ -34,64 +34,60 @@ def cli():
 @click.option('--images', '-i', multiple=True, help='Path(s) to image files')
 @click.option('--models', '-m', multiple=True, help='Specific models to use (default: all available)')
 @click.option('--parallel/--sequential', default=True, help='Run models in parallel or sequentially')
+@click.option('--openai', is_flag=True, default=False,
+              help='Use the OpenAI API (default: Ollama)')
 @click.option('--output', '-o', help='Save responses to JSON file')
-def chat(prompt: str, images: List[str], models: List[str], parallel: bool, output: Optional[str]):
+def chat(prompt: str, images: List[str], models: List[str], parallel: bool,
+         openai: bool, output: Optional[str]):
     """Chat with multiple models and compare responses."""
-    asyncio.run(_chat_command(prompt, images, models, parallel, output))
+    asyncio.run(_chat_command(prompt, images, models, parallel, openai, output))
 
-def _build_default_chatbot(models: List[str]) -> Tuple[ParallelChatbot, List[str]]:
+def _build_default_chatbot(models: List[str], openai: bool = False) -> Tuple[ParallelChatbot, List[str]]:
     """Build a ParallelChatbot with the requested or default models.
 
-    If no models are specified, adds the default GPT model (when an API key is
-    available) and the default Ollama model. Otherwise adds each ``type:name``
-    spec (defaulting to ollama when no type prefix is given).
+    The backend is chosen entirely by the ``openai`` flag: models run against
+    Ollama by default, or against the OpenAI API when ``openai=True``. Because
+    the type is no longer inferred from a ``type:`` name prefix, model names may
+    safely contain ``:`` (e.g. an Ollama tag like ``qwen2.5:7b``).
+
+    If no models are specified, adds the default model for the selected backend.
+    Otherwise adds each named model to that backend.
 
     Returns the chatbot along with the list of model keys it was populated with.
-    These keys (the bare model names, without any ``type:`` prefix) are what the
-    chatbot stores internally, so callers must use them — not the raw specs —
-    when asking the chatbot to run a specific subset of models.
+    These keys (the bare model names) are what the chatbot stores internally, so
+    callers must use them when asking the chatbot to run a specific subset.
     """
     chatbot = ParallelChatbot()
     model_keys: List[str] = []
+    model_type = "gpt" if openai else "ollama"
 
-    # Add default models if none specified
+    if openai and not config.OPENAI_API_KEY:
+        console.print("[yellow]Warning: --openai set but OPENAI_API_KEY is not "
+                      "configured[/yellow]")
+
+    # Use the backend's default model when none are specified.
     if not models:
-        # Try to add GPT model
-        if config.OPENAI_API_KEY:
-            try:
-                chatbot.add_model("gpt", config.DEFAULT_GPT_MODEL)
-                model_keys.append(config.DEFAULT_GPT_MODEL)
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not add GPT model: {e}[/yellow]")
+        models = [config.DEFAULT_GPT_MODEL if openai else config.DEFAULT_OLLAMA_MODEL]
 
-        # Try to add Ollama model
+    for model_name in models:
         try:
-            chatbot.add_model("ollama", config.DEFAULT_OLLAMA_MODEL)
-            model_keys.append(config.DEFAULT_OLLAMA_MODEL)
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not add Ollama model: {e}[/yellow]")
-    else:
-        # Add specified models
-        for model_spec in models:
-            if ':' in model_spec:
-                model_type, model_name = model_spec.split(':', 1)
-                chatbot.add_model(model_type, model_name)
-            else:
-                # Default to ollama if no type specified
-                model_type, model_name = "ollama", model_spec
-                chatbot.add_model(model_type, model_name)
+            chatbot.add_model(model_type, model_name)
             model_keys.append(model_name)
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not add {model_type} model "
+                          f"{model_name}: {e}[/yellow]")
 
     return chatbot, model_keys
 
-async def _chat_command(prompt: str, images: List[str], models: List[str], parallel: bool, output: Optional[str]):
+async def _chat_command(prompt: str, images: List[str], models: List[str],
+                        parallel: bool, openai: bool, output: Optional[str]):
     """Internal chat command implementation."""
-    chatbot, model_keys = _build_default_chatbot(models)
+    chatbot, model_keys = _build_default_chatbot(models, openai)
 
     if not chatbot.list_models():
         console.print("[red]Error: No models available![/red]")
         console.print("Make sure you have:")
-        console.print("1. Set OPENAI_API_KEY environment variable for GPT models")
+        console.print("1. Set OPENAI_API_KEY environment variable and pass --openai for GPT models")
         console.print("2. Ollama running with available models")
         return
     
@@ -226,6 +222,8 @@ async def _pull_model_command(model_name: str):
 @click.option('--start', '-s', required=True, help='Start date YYYY-MM-DD (inclusive)')
 @click.option('--end', '-e', help='End date YYYY-MM-DD (inclusive; default: same as start)')
 @click.option('--models', '-m', multiple=True, help='Specific models to use (default: all available)')
+@click.option('--openai', is_flag=True, default=False,
+              help='Use the OpenAI API (default: Ollama)')
 @click.option('--output', '-o', help='Save the DQ report to a JSON file')
 @click.option('--max-images', type=int, default=None,
               help='Max quicklook images per day (default: config value)')
@@ -236,14 +234,14 @@ async def _pull_model_command(model_name: str):
 @click.option('--refresh-cache', is_flag=True, default=False,
               help='Re-download images even when a cached copy exists')
 def dq(datastream: str, start: str, end: Optional[str], models: List[str],
-       output: Optional[str], max_images: Optional[int], cache: bool,
+       openai: bool, output: Optional[str], max_images: Optional[int], cache: bool,
        cache_dir: Optional[str], refresh_cache: bool):
     """Assess data quality of a datastream's quicklook images via LLM(s)."""
-    asyncio.run(_dq_command(datastream, start, end, models, output, max_images,
+    asyncio.run(_dq_command(datastream, start, end, models, openai, output, max_images,
                             cache, cache_dir, refresh_cache))
 
 async def _dq_command(datastream: str, start: str, end: Optional[str], models: List[str],
-                      output: Optional[str], max_images: Optional[int],
+                      openai: bool, output: Optional[str], max_images: Optional[int],
                       cache: bool = False, cache_dir: Optional[str] = None,
                       refresh_cache: bool = False):
     """Internal data quality command implementation."""
@@ -259,11 +257,11 @@ async def _dq_command(datastream: str, start: str, end: Optional[str], models: L
         console.print("[red]Error: --end must not be before --start[/red]")
         return
 
-    chatbot, model_keys = _build_default_chatbot(models)
+    chatbot, model_keys = _build_default_chatbot(models, openai)
     if not chatbot.list_models():
         console.print("[red]Error: No models available![/red]")
         console.print("Make sure you have:")
-        console.print("1. Set OPENAI_API_KEY environment variable for GPT models")
+        console.print("1. Set OPENAI_API_KEY environment variable and pass --openai for GPT models")
         console.print("2. Ollama running with available models")
         return
 

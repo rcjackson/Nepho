@@ -103,7 +103,7 @@ class ParallelChatbot:
             available_models = [name for name in model_names if name in self.models.keys()]
         else:
             available_models = list(self.models.keys())
-        print(self.models.keys(), model_names, available_models)
+        
         if not available_models:
             return [ChatResponse(
                 model_name="none",
